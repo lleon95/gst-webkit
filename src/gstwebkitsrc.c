@@ -364,7 +364,7 @@ gst_webkit_src_init (GstWebkitSrc * src)
 {
 
   GST_DEBUG ("gtk init");
-  gtk_init_check(NULL, NULL);
+  gtk_init(NULL, NULL);
   src->ready = TRUE;
 
   GST_DEBUG ("init webview");
