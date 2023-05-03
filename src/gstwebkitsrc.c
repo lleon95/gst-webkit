@@ -72,6 +72,8 @@
 
 #include <gst/gst.h>
 
+#define AVOID_COPIES
+
 #include <stdlib.h>
 #include "gstwebkitsrc.h"
 
@@ -324,11 +326,22 @@ static gboolean gst_webkit_src_load_webkit_ready (gpointer psrc)
     GstWebkitSrc *src = GST_WEBKIT_SRC (psrc);
     GST_OBJECT_LOCK (src);
     if (src->enabled){
+#ifndef AVOID_COPIES
+      // Problematic line!!
       GdkPixbuf* pixbuf = gtk_offscreen_window_get_pixbuf(src->window);
       GST_DEBUG ("Copy webkit -> buffer");
       orc_memcpy(src->data, gdk_pixbuf_read_pixels(pixbuf), 1280*720*4*sizeof(guint8));
       GST_DEBUG ("End webkit -> buffer");
       g_object_unref(pixbuf);
+#else
+      src->img_surface = cairo_surface_map_to_image(src->ps_surface, NULL);
+      src->webkit_frame = cairo_image_surface_get_data(src->img_surface);
+
+      // The copy is now limiting the performance
+      orc_memcpy(src->data, src->webkit_frame, 1280*720*4*sizeof(guint8));
+
+      cairo_surface_unmap_image(src->ps_surface, src->img_surface);
+#endif
     } else{
       memset(src->data, 0, 1280*720*4*sizeof(guint8));
     }
@@ -351,7 +364,7 @@ gst_webkit_src_init (GstWebkitSrc * src)
 {
 
   GST_DEBUG ("gtk init");
-  gtk_init(NULL, NULL);
+  gtk_init_check(NULL, NULL);
   src->ready = TRUE;
 
   GST_DEBUG ("init webview");
@@ -368,21 +381,9 @@ gst_webkit_src_init (GstWebkitSrc * src)
 
   static const GdkRGBA transparent = {255, 255, 0, 0};
 
-/*  GdkScreen *screen = gtk_window_get_screen (GTK_WINDOW (src->window));
-  GdkVisual *rgba_visual = gdk_screen_get_rgba_visual (screen);
-
-  if (!rgba_visual)
-       return;
-
-   gtk_widget_set_visual (GTK_WIDGET (src->window), rgba_visual);*/
-   //gtk_widget_set_app_paintable (GTK_WIDGET (src->window), TRUE);
-  //webkit_web_view_set_background_color(src->web_view, &transparent);
-
   gtk_window_set_default_size(GTK_WINDOW(src->window), 1280, 720);
   gtk_container_add(GTK_CONTAINER(src->window), GTK_WIDGET(src->web_view));
   GST_DEBUG ("COLOR SET");
-
-
 
   WebKitSettings *settings = webkit_settings_new ();
   webkit_settings_set_auto_load_images(settings, TRUE);
@@ -400,9 +401,15 @@ gst_webkit_src_init (GstWebkitSrc * src)
 
   src->data = malloc(4*1280*720*sizeof(guint8));
 
-  webkit_web_context_set_cache_model(webkit_web_context_get_default(), WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
+  webkit_web_context_set_cache_model(webkit_web_context_get_default(), WEBKIT_CACHE_MODEL_WEB_BROWSER);
 
   gtk_widget_show_all(src->window);
+
+#ifdef AVOID_COPIES
+  GdkWindow *window = gtk_widget_get_window (GTK_WIDGET (src->window));
+  src->ps_surface = gdk_offscreen_window_get_surface (window);
+  /* end of LLEON new code */
+#endif
 
   g_timeout_add(50, gst_webkit_src_load_webkit_ready, (gpointer) src);
 

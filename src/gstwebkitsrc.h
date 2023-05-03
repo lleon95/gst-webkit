@@ -99,6 +99,11 @@ struct _GstWebkitSrc
   guint8* data;
   gboolean enabled;
   gboolean ready;
+
+  /* Cairo caching */
+  guint8 *webkit_frame;
+  cairo_surface_t *img_surface;
+  cairo_surface_t *ps_surface;
 };
 
 struct _GstWebkitSrcClass
