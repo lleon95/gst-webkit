@@ -104,6 +104,8 @@ struct _GstWebkitSrc
   guint8 *webkit_frame;
   cairo_surface_t *img_surface;
   cairo_surface_t *ps_surface;
+  cairo_t *ct;
+  gint stride;
 };
 
 struct _GstWebkitSrcClass

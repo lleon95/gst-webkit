@@ -62,6 +62,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "timelib.h"
 
 
 #ifdef HAVE_ORC
@@ -72,13 +73,15 @@
 
 #include <gst/gst.h>
 
-#define AVOID_COPIES
+//#define AVOID_COPIES
+#define USE_CAIRO_SURFACE
 
 #include <stdlib.h>
 #include "gstwebkitsrc.h"
 
 GST_DEBUG_CATEGORY_STATIC (gst_webkit_src_debug);
 #define GST_CAT_DEFAULT gst_webkit_src_debug
+
 
 /* Filter signals and args */
 enum
@@ -230,8 +233,6 @@ gst_webkit_src_setcaps (GstBaseSrc * bsrc, GstCaps * caps)
     goto parse_failed;
   }
 
-
-
   src->info = info;
 
   return TRUE;
@@ -319,21 +320,21 @@ invalid_frame:
 }
 
 
-
 static gboolean gst_webkit_src_load_webkit_ready (gpointer psrc)
 {
 
     GstWebkitSrc *src = GST_WEBKIT_SRC (psrc);
     GST_OBJECT_LOCK (src);
     if (src->enabled){
-#ifndef AVOID_COPIES
+#if !defined(AVOID_COPIES) && !defined(USE_CAIRO_SURFACE)
       // Problematic line!!
       GdkPixbuf* pixbuf = gtk_offscreen_window_get_pixbuf(src->window);
       GST_DEBUG ("Copy webkit -> buffer");
       orc_memcpy(src->data, gdk_pixbuf_read_pixels(pixbuf), 1280*720*4*sizeof(guint8));
       GST_DEBUG ("End webkit -> buffer");
       g_object_unref(pixbuf);
-#else
+#elif defined(AVOID_COPIES)
+      uint64_t start = micros();
       src->img_surface = cairo_surface_map_to_image(src->ps_surface, NULL);
       src->webkit_frame = cairo_image_surface_get_data(src->img_surface);
 
@@ -341,6 +342,10 @@ static gboolean gst_webkit_src_load_webkit_ready (gpointer psrc)
       orc_memcpy(src->data, src->webkit_frame, 1280*720*4*sizeof(guint8));
 
       cairo_surface_unmap_image(src->ps_surface, src->img_surface);
+      uint64_t end = micros();
+      GST_INFO_OBJECT(src, "Time: %lu us - %p", end - start, src->webkit_frame);
+#elif defined(USE_CAIRO_SURFACE)
+      gtk_widget_draw(GTK_WIDGET(src->window), src->ct);
 #endif
     } else{
       memset(src->data, 0, 1280*720*4*sizeof(guint8));
@@ -394,12 +399,17 @@ gst_webkit_src_init (GstWebkitSrc * src)
   webkit_settings_set_enable_page_cache(settings, FALSE);
   webkit_settings_set_enable_accelerated_2d_canvas(settings, TRUE);
   webkit_settings_set_enable_write_console_messages_to_stdout(settings, TRUE);
+  webkit_settings_set_print_backgrounds (settings, FALSE);
   webkit_settings_set_enable_plugins (settings, FALSE);
   webkit_settings_set_hardware_acceleration_policy(settings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
   webkit_web_view_set_settings (WEBKIT_WEB_VIEW(src->web_view), settings);
 
-
-  src->data = malloc(4*1280*720*sizeof(guint8));
+#if defined(USE_CAIRO_SURFACE)
+  src->stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, 1280);
+  src->data = malloc(src->stride * 720);
+#else
+  src->data = malloc(4 * 1280 * 720 * sizeof(guint8));
+#endif
 
   webkit_web_context_set_cache_model(webkit_web_context_get_default(), WEBKIT_CACHE_MODEL_WEB_BROWSER);
 
@@ -409,6 +419,11 @@ gst_webkit_src_init (GstWebkitSrc * src)
   GdkWindow *window = gtk_widget_get_window (GTK_WIDGET (src->window));
   src->ps_surface = gdk_offscreen_window_get_surface (window);
   /* end of LLEON new code */
+
+#elif defined(USE_CAIRO_SURFACE)
+  GST_ERROR_OBJECT(src, "Drawable: %i", gtk_widget_is_drawable(GTK_WIDGET (src->window)));
+  src->img_surface = cairo_image_surface_create_for_data(src->data, CAIRO_FORMAT_ARGB32, 1280, 720, src->stride);
+  src->ct = cairo_create(src->img_surface);
 #endif
 
   g_timeout_add(50, gst_webkit_src_load_webkit_ready, (gpointer) src);
@@ -520,6 +535,12 @@ gst_webkit_src_stop (GstBaseSrc * basesrc)
 
   gtk_widget_destroy(GTK_WIDGET(src->web_view));
   gtk_widget_destroy(GTK_WINDOW(src->window));
+#ifdef USE_CAIRO_SURFACE  
+  cairo_destroy(src->ct);
+  src->ct = NULL;
+  cairo_surface_finish(src->img_surface);
+  src->img_surface = NULL;
+#endif
   free(src->data);
   GST_OBJECT_UNLOCK (src);
 
